@@ -109,6 +109,16 @@ class Generator {
     return _wrapTextWithWidth(text, maxChars, (_) => 1);
   }
 
+  /// Public word-wrap helper that uses the configured paper size and styles.
+  ///
+  /// Returns the wrapped lines for [text] without emitting any printer bytes.
+  /// Useful for pre-wrapping text before sending it to a third-party printer
+  /// class or for verifying output.
+  List<String> wrapText(String text, {PosStyles? styles, int? maxCharsPerLine}) {
+    final int maxChars = _getCharsPerLine(styles ?? _styles, maxCharsPerLine);
+    return _wrapText(text, maxChars);
+  }
+
   /// Wrap [text] into lines no wider than [maxChars] by splitting on word
   /// boundaries. [getWidth] returns the visual width of a single character.
   List<String> _wrapTextWithWidth(
@@ -577,6 +587,7 @@ class Generator {
   /// Total width of columns in one row must be equal 12.
   List<int> row(List<PosColumn> cols,
       {bool multiLine = true, bool wordWrap = true}) {
+    print('row');
     List<int> bytes = [];
     final isSumValid = cols.fold(0, (int sum, col) => sum + col.width) == 12;
     if (!isSumValid) {
@@ -605,6 +616,7 @@ class Generator {
           int realCharactersNb = encodedToPrint.length;
           if (realCharactersNb > maxCharactersNb) {
             if (wordWrap && cols[i].textEncoded == null) {
+              print('WORDWRAP: ${cols[i].text.substring(0, cols[i].text.length < 20 ? cols[i].text.length : 20)}');
               // Split on word boundaries when the original text is available.
               final List<String> lines = _wrapText(cols[i].text, maxCharactersNb);
               encodedToPrint = _encode(lines[0]);
