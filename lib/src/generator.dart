@@ -102,6 +102,81 @@ class Generator {
     return ch.codeUnitAt(0) > 255;
   }
 
+  /// Wrap [text] into lines no wider than [maxChars] by splitting on word
+  /// boundaries. If a single word is wider than [maxChars], it is broken into
+  /// chunks. Each character is assumed to have a width of 1.
+  List<String> _wrapText(String text, int maxChars) {
+    return _wrapTextWithWidth(text, maxChars, (_) => 1);
+  }
+
+  /// Wrap [text] into lines no wider than [maxChars] by splitting on word
+  /// boundaries. [getWidth] returns the visual width of a single character.
+  List<String> _wrapTextWithWidth(
+      String text, int maxChars, int Function(String char) getWidth) {
+    if (text.isEmpty || maxChars <= 0) return [text];
+
+    final List<String> words = text.split(' ');
+    final List<String> lines = <String>[];
+    final StringBuffer currentLine = StringBuffer();
+    int currentWidth = 0;
+
+    for (int i = 0; i < words.length; i++) {
+      final String word = words[i];
+      if (word.isEmpty) continue;
+
+      int wordWidth = 0;
+      for (int j = 0; j < word.length; j++) {
+        wordWidth += getWidth(word[j]);
+      }
+
+      if (wordWidth > maxChars) {
+        // Long word: flush current line first, then split the word into chunks.
+        if (currentWidth > 0) {
+          lines.add(currentLine.toString());
+          currentLine.clear();
+          currentWidth = 0;
+        }
+
+        int chunkStart = 0;
+        int chunkWidth = 0;
+        for (int j = 0; j < word.length; j++) {
+          final int charWidth = getWidth(word[j]);
+          if (chunkWidth + charWidth > maxChars && chunkWidth > 0) {
+            lines.add(word.substring(chunkStart, j));
+            chunkStart = j;
+            chunkWidth = 0;
+          }
+          chunkWidth += charWidth;
+        }
+        if (chunkWidth > 0) {
+          currentLine.write(word.substring(chunkStart));
+          currentWidth = chunkWidth;
+        }
+        continue;
+      }
+
+      if (currentWidth == 0) {
+        currentLine.write(word);
+        currentWidth = wordWidth;
+      } else if (currentWidth + 1 + wordWidth <= maxChars) {
+        currentLine.write(' ');
+        currentLine.write(word);
+        currentWidth += 1 + wordWidth;
+      } else {
+        lines.add(currentLine.toString());
+        currentLine.clear();
+        currentLine.write(word);
+        currentWidth = wordWidth;
+      }
+    }
+
+    if (currentWidth > 0) {
+      lines.add(currentLine.toString());
+    }
+
+    return lines.isEmpty ? <String>[text] : lines;
+  }
+
   /// Generate multiple bytes for a number: In lower and higher parts, or more parts as needed.
   ///
   /// [value] Input number
@@ -367,19 +442,40 @@ class Generator {
     int linesAfter = 0,
     bool containsChinese = false,
     int? maxCharsPerLine,
+    bool wordWrap = true,
   }) {
     List<int> bytes = [];
     if (!containsChinese) {
-      bytes += _text(
-        _encode(text, isKanji: containsChinese),
-        styles: styles,
-        isKanji: containsChinese,
-        maxCharsPerLine: maxCharsPerLine,
-      );
+      final int maxChars = _getCharsPerLine(styles, maxCharsPerLine);
+      if (wordWrap && text.length > maxChars) {
+        final List<String> lines = _wrapText(text, maxChars);
+        for (int i = 0; i < lines.length; i++) {
+          bytes += _text(
+            _encode(lines[i], isKanji: containsChinese),
+            styles: styles,
+            isKanji: containsChinese,
+            maxCharsPerLine: maxCharsPerLine,
+          );
+          if (i < lines.length - 1) {
+            bytes += emptyLines(1);
+          }
+        }
+      } else {
+        bytes += _text(
+          _encode(text, isKanji: containsChinese),
+          styles: styles,
+          isKanji: containsChinese,
+          maxCharsPerLine: maxCharsPerLine,
+        );
+      }
       // Ensure at least one line break after the text
       bytes += emptyLines(linesAfter + 1);
     } else {
-      bytes += _mixedKanji(text, styles: styles, linesAfter: linesAfter);
+      bytes += _mixedKanji(text,
+          styles: styles,
+          linesAfter: linesAfter,
+          maxCharsPerLine: maxCharsPerLine,
+          wordWrap: wordWrap);
     }
     return bytes;
   }
@@ -479,7 +575,8 @@ class Generator {
   ///
   /// A row contains up to 12 columns. A column has a width between 1 and 12.
   /// Total width of columns in one row must be equal 12.
-  List<int> row(List<PosColumn> cols, {bool multiLine = true}) {
+  List<int> row(List<PosColumn> cols,
+      {bool multiLine = true, bool wordWrap = true}) {
     List<int> bytes = [];
     final isSumValid = cols.fold(0, (int sum, col) => sum + col.width) == 12;
     if (!isSumValid) {
@@ -507,15 +604,32 @@ class Generator {
         if (multiLine) {
           int realCharactersNb = encodedToPrint.length;
           if (realCharactersNb > maxCharactersNb) {
-            // Print max possible and split to the next row
-            Uint8List encodedToPrintNextRow =
-                encodedToPrint.sublist(maxCharactersNb);
-            encodedToPrint = encodedToPrint.sublist(0, maxCharactersNb);
-            isNextRow = true;
-            nextRow.add(PosColumn(
-                textEncoded: encodedToPrintNextRow,
-                width: cols[i].width,
-                styles: cols[i].styles));
+            if (wordWrap && cols[i].textEncoded == null) {
+              // Split on word boundaries when the original text is available.
+              final List<String> lines = _wrapText(cols[i].text, maxCharactersNb);
+              encodedToPrint = _encode(lines[0]);
+              if (lines.length > 1) {
+                isNextRow = true;
+                nextRow.add(PosColumn(
+                    text: lines.sublist(1).join(' '),
+                    width: cols[i].width,
+                    styles: cols[i].styles));
+              } else {
+                // Insert an empty col
+                nextRow.add(PosColumn(
+                    text: '', width: cols[i].width, styles: cols[i].styles));
+              }
+            } else {
+              // Print max possible and split to the next row
+              Uint8List encodedToPrintNextRow =
+                  encodedToPrint.sublist(maxCharactersNb);
+              encodedToPrint = encodedToPrint.sublist(0, maxCharactersNb);
+              isNextRow = true;
+              nextRow.add(PosColumn(
+                  textEncoded: encodedToPrintNextRow,
+                  width: cols[i].width,
+                  styles: cols[i].styles));
+            }
           } else {
             // Insert an empty col
             nextRow.add(PosColumn(
@@ -530,20 +644,32 @@ class Generator {
           colWidth: cols[i].width,
         );
       } else {
-        // CASE 1: containsChinese = true
-        // Split text into multiple lines if it too long
-        int counter = 0;
-        int splitPos = 0;
-        for (int p = 0; p < cols[i].text.length; ++p) {
-          final int w = _isChinese(cols[i].text[p]) ? 2 : 1;
-          if (counter + w >= maxCharactersNb) {
-            break;
+        // CASE 2: containsChinese = true
+        // Split text into multiple lines if it is too long
+        String toPrint;
+        String toPrintNextRow;
+        if (wordWrap) {
+          final List<String> lines = _wrapTextWithWidth(
+              cols[i].text,
+              maxCharactersNb,
+              (String ch) => _isChinese(ch) ? 2 : 1);
+          toPrint = lines[0];
+          toPrintNextRow =
+              lines.length > 1 ? lines.sublist(1).join(' ') : '';
+        } else {
+          int counter = 0;
+          int splitPos = 0;
+          for (int p = 0; p < cols[i].text.length; ++p) {
+            final int w = _isChinese(cols[i].text[p]) ? 2 : 1;
+            if (counter + w >= maxCharactersNb) {
+              break;
+            }
+            counter += w;
+            splitPos += 1;
           }
-          counter += w;
-          splitPos += 1;
+          toPrintNextRow = cols[i].text.substring(splitPos);
+          toPrint = cols[i].text.substring(0, splitPos);
         }
-        String toPrintNextRow = cols[i].text.substring(splitPos);
-        String toPrint = cols[i].text.substring(0, splitPos);
 
         if (toPrintNextRow.isNotEmpty) {
           isNextRow = true;
@@ -582,7 +708,7 @@ class Generator {
     bytes += emptyLines(1);
 
     if (isNextRow) {
-      bytes += row(nextRow);
+      bytes += row(nextRow, wordWrap: wordWrap);
     }
     return bytes;
   }
@@ -855,30 +981,46 @@ class Generator {
     return bytes;
   }
 
-  /// Prints one line of styled mixed (chinese and latin symbols) text
+  /// Prints one or more lines of styled mixed (chinese and latin symbols) text
   List<int> _mixedKanji(
     String text, {
     PosStyles styles = const PosStyles(),
     int linesAfter = 0,
     int? maxCharsPerLine,
+    bool wordWrap = true,
   }) {
     List<int> bytes = [];
-    final list = _getLexemes(text);
-    final List<String> lexemes = list[0];
-    final List<bool> isLexemeChinese = list[1];
+    final int maxChars = _getCharsPerLine(styles, maxCharsPerLine);
+    final List<String> lines;
+    if (wordWrap && text.length > maxChars) {
+      lines = _wrapTextWithWidth(
+          text, maxChars, (String ch) => _isChinese(ch) ? 2 : 1);
+    } else {
+      lines = <String>[text];
+    }
 
-    // Print each lexeme using codetable OR kanji
-    int? colInd = 0;
-    for (var i = 0; i < lexemes.length; ++i) {
-      bytes += _text(
-        _encode(lexemes[i], isKanji: isLexemeChinese[i]),
-        styles: styles,
-        colInd: colInd,
-        isKanji: isLexemeChinese[i],
-        maxCharsPerLine: maxCharsPerLine,
-      );
-      // Define the absolute position only once (we print one line only)
-      colInd = null;
+    for (int lineIndex = 0; lineIndex < lines.length; lineIndex++) {
+      final list = _getLexemes(lines[lineIndex]);
+      final List<String> lexemes = list[0];
+      final List<bool> isLexemeChinese = list[1];
+
+      // Print each lexeme using codetable OR kanji
+      int? colInd = 0;
+      for (var i = 0; i < lexemes.length; ++i) {
+        bytes += _text(
+          _encode(lexemes[i], isKanji: isLexemeChinese[i]),
+          styles: styles,
+          colInd: colInd,
+          isKanji: isLexemeChinese[i],
+          maxCharsPerLine: maxCharsPerLine,
+        );
+        // Define the absolute position only once (we print one line only)
+        colInd = null;
+      }
+
+      if (lineIndex < lines.length - 1) {
+        bytes += emptyLines(1);
+      }
     }
 
     bytes += emptyLines(linesAfter + 1);
