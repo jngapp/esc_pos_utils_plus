@@ -587,7 +587,6 @@ class Generator {
   /// Total width of columns in one row must be equal 12.
   List<int> row(List<PosColumn> cols,
       {bool multiLine = true, bool wordWrap = true}) {
-    print('row');
     List<int> bytes = [];
     final isSumValid = cols.fold(0, (int sum, col) => sum + col.width) == 12;
     if (!isSumValid) {
@@ -616,7 +615,6 @@ class Generator {
           int realCharactersNb = encodedToPrint.length;
           if (realCharactersNb > maxCharactersNb) {
             if (wordWrap && cols[i].textEncoded == null) {
-              print('WORDWRAP: ${cols[i].text.substring(0, cols[i].text.length < 20 ? cols[i].text.length : 20)}');
               // Split on word boundaries when the original text is available.
               final List<String> lines = _wrapText(cols[i].text, maxCharactersNb);
               encodedToPrint = _encode(lines[0]);
